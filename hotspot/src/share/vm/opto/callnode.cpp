@@ -234,7 +234,8 @@ uint TailJumpNode::match_edge(uint idx) const {
 
 //=============================================================================
 JVMState::JVMState(ciMethod* method, JVMState* caller) :
-  _method(method) {
+  _method(method),
+  _receiver_info(NULL) { // JDK-8358751
   assert(method != NULL, "must be valid call site");
   _reexecute = Reexecute_Undefined;
   debug_only(_bci = -99);  // random garbage value
@@ -249,7 +250,8 @@ JVMState::JVMState(ciMethod* method, JVMState* caller) :
   _sp = 0;
 }
 JVMState::JVMState(int stack_size) :
-  _method(NULL) {
+  _method(NULL),
+  _receiver_info(NULL) { // JDK-8358751
   _bci = InvocationEntryBci;
   _reexecute = Reexecute_Undefined;
   debug_only(_map = (SafePointNode*)-1);
@@ -573,7 +575,22 @@ JVMState* JVMState::clone_shallow(Compile* C) const {
   n->set_endoff(_endoff);
   n->set_sp(_sp);
   n->set_map(_map);
+  n->set_receiver_info(_receiver_info); // JDK-8358751
   return n;
+}
+
+// JDK-8358751: receiver identity for compiled lambda forms at a call site.
+ciInstance* JVMState::compute_receiver_info(ciMethod* callee) const {
+  assert(callee != NULL && callee->is_compiled_lambda_form(), "required");
+  if (has_method() && method()->is_compiled_lambda_form()) {
+    Node* recv = map()->argument(this, 0);
+    assert(recv != NULL, "");
+    const TypeOopPtr* recv_toop = recv->bottom_type()->isa_oopptr();
+    if (recv_toop != NULL && recv_toop->const_oop() != NULL) {
+      return recv_toop->const_oop()->as_instance();
+    }
+  }
+  return NULL;
 }
 
 //---------------------------clone_deep----------------------------------------
@@ -1013,7 +1030,8 @@ void CallLeafNode::dump_spec(outputStream *st) const {
 
 //=============================================================================
 
-void SafePointNode::set_local(JVMState* jvms, uint idx, Node *c) {
+// JDK-8358751: const JVMState* (matches SafePointNode accessors / compute_receiver_info).
+void SafePointNode::set_local(const JVMState* jvms, uint idx, Node *c) {
   assert(verify_jvms(jvms), "jvms must match");
   int loc = jvms->locoff() + idx;
   if (in(loc)->is_top() && idx > 0 && !c->is_top() ) {

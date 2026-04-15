@@ -1149,6 +1149,38 @@ Node *PhiNode::Identity( PhaseTransform *phase ) {
     if (id != NULL)  return id;
   }
 
+  // JDK-8243670 / JDK-8296023 (backport from mainline):
+  // When MergeMem::Ideal no longer folds equivalent memory phis into slices,
+  // memory Phis with identical arms as a TypePtr::BOTTOM memory Phi should
+  // identity to that BOTTOM phi so the graph stays consistent during IGVN.
+  if (phase->is_IterGVN() && type() == Type::MEMORY) {
+    const TypePtr* at = adr_type();
+    const TypeOopPtr* mem_at = (at != NULL) ? at->isa_oopptr() : NULL;
+    if (at != NULL && at != TypePtr::BOTTOM &&
+        (mem_at == NULL || !mem_at->is_known_instance())) {
+      uint phi_len = req();
+      Node* phi_reg = region();
+      if (phi_reg != NULL) {
+        for (DUIterator_Fast imax, i = phi_reg->fast_outs(imax); i < imax; i++) {
+          Node* u = phi_reg->fast_out(i);
+          if (u->is_Phi() && u->as_Phi()->type() == Type::MEMORY &&
+              u->adr_type() == TypePtr::BOTTOM && u->in(0) == phi_reg &&
+              u->req() == phi_len) {
+            for (uint j = 1; j < phi_len; j++) {
+              if (in(j) != u->in(j)) {
+                u = NULL;
+                break;
+              }
+            }
+            if (u != NULL) {
+              return u;
+            }
+          }
+        }
+      }
+    }
+  }
+
   return this;                     // No identity
 }
 

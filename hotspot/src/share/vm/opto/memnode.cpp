@@ -4491,6 +4491,11 @@ Node* MergeMemNode::Identity(PhaseTransform *phase) {
 
 //------------------------------Ideal------------------------------------------
 // This method is invoked recursively on chains of MergeMem nodes
+//
+// JDK-8243670 / JDK-8296023 (backport from mainline):
+// Removed unsafe folding of "equivalent" memory Phi inputs through MergeMem slices
+// that could break memory disambiguation.  Companion logic in PhiNode::Identity
+// (same JBS issues) re-routes matching narrow memory phis to the BOTTOM phi.
 Node *MergeMemNode::Ideal(PhaseGVN *phase, bool can_reshape) {
   // Remove chain'd MergeMems
   //
@@ -4518,30 +4523,6 @@ Node *MergeMemNode::Ideal(PhaseGVN *phase, bool can_reshape) {
 
   // the base memory might contribute new slices beyond my req()
   if (old_mbase)  grow_to_match(old_mbase);
-
-  // Look carefully at the base node if it is a phi.
-  PhiNode* phi_base;
-  if (new_base != NULL && new_base->is_Phi())
-    phi_base = new_base->as_Phi();
-  else
-    phi_base = NULL;
-
-  Node*    phi_reg = NULL;
-  uint     phi_len = (uint)-1;
-  if (phi_base != NULL && !phi_base->is_copy()) {
-    // do not examine phi if degraded to a copy
-    phi_reg = phi_base->region();
-    phi_len = phi_base->req();
-    // see if the phi is unfinished
-    for (uint i = 1; i < phi_len; i++) {
-      if (phi_base->in(i) == NULL) {
-        // incomplete phi; do not look at it yet!
-        phi_reg = NULL;
-        phi_len = (uint)-1;
-        break;
-      }
-    }
-  }
 
   // Note:  We do not call verify_sparse on entry, because inputs
   // can normalize to the base_memory via subsume_node or similar
@@ -4584,24 +4565,6 @@ Node *MergeMemNode::Ideal(PhaseGVN *phase, bool can_reshape) {
       new_mem = old_mmem->memory_at(i);
     }
     // else preceding memory was not a MergeMem
-
-    // replace equivalent phis (unfortunately, they do not GVN together)
-    if (new_mem != NULL && new_mem != new_base &&
-        new_mem->req() == phi_len && new_mem->in(0) == phi_reg) {
-      if (new_mem->is_Phi()) {
-        PhiNode* phi_mem = new_mem->as_Phi();
-        for (uint i = 1; i < phi_len; i++) {
-          if (phi_base->in(i) != phi_mem->in(i)) {
-            phi_mem = NULL;
-            break;
-          }
-        }
-        if (phi_mem != NULL) {
-          // equivalent phi nodes; revert to the def
-          new_mem = new_base;
-        }
-      }
-    }
 
     // maybe store down a new value
     Node* new_in = new_mem;

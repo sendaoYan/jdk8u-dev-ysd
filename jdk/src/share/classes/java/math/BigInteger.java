@@ -1581,8 +1581,11 @@ public class BigInteger extends Number implements Comparable<BigInteger> {
                     // are only considering the magnitudes as non-negative. The
                     // Toom-Cook multiplication algorithm determines the sign
                     // at its end from the two signum values.
-                    if (bitLength(mag, mag.length) +
-                        bitLength(val.mag, val.mag.length) >
+                    // JDK-8272541: sum in long; int + int can overflow before the
+                    // comparison to 32L*MAX_MAG_LENGTH, skipping overflow reporting
+                    // and yielding incorrect products (seen under C2 as flaky TLS).
+                    if ((long)bitLength(mag, mag.length) +
+                        (long)bitLength(val.mag, val.mag.length) >
                         32L*MAX_MAG_LENGTH) {
                         reportOverflow();
                     }

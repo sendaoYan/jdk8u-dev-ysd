@@ -39,6 +39,7 @@
 
 class Chaitin;
 class NamedCounter;
+class ciInstance; // JDK-8358751 (ci receiver for compiled lambda forms)
 class MultiNode;
 class  SafePointNode;
 class   CallNode;
@@ -209,6 +210,8 @@ private:
   int               _bci;       // Byte Code Index of this JVM point
   ReexecuteState    _reexecute; // Whether this bytecode need to be re-executed
   ciMethod*         _method;    // Method Pointer
+  // JDK-8358751: constant receiver instance for compiled lambda forms (recursive inlining).
+  ciInstance*       _receiver_info;
   SafePointNode*    _map;       // Map node associated with this scope
 public:
   friend class Compile;
@@ -295,6 +298,9 @@ public:
                     // _reexecute is initialized to "undefined" for a new bci
   void              set_bci(int bci) {if(_bci != bci)_reexecute=Reexecute_Undefined; _bci = bci; }
   void              set_should_reexecute(bool reexec) {_reexecute = reexec ? Reexecute_True : Reexecute_False;}
+  // JDK-8358751
+  ciInstance*       receiver_info() const { assert(has_method(), ""); return _receiver_info; }
+  void              set_receiver_info(ciInstance* recv) { assert(has_method() || recv == NULL, ""); _receiver_info = recv; }
 
   // Miscellaneous utility functions
   JVMState* clone_deep(Compile* C) const;    // recursively clones caller chain
@@ -302,6 +308,8 @@ public:
   void      set_map_deep(SafePointNode *map);// reset map for all callers
   void      adapt_position(int delta);       // Adapt offsets in in-array after adding an edge.
   int       interpreter_frame_size() const;
+  // JDK-8358751
+  ciInstance* compute_receiver_info(ciMethod* callee) const;
 
 #ifndef PRODUCT
   void      format(PhaseRegAlloc *regalloc, const Node *n, outputStream* st) const;
@@ -350,7 +358,8 @@ public:
   void set_oop_map(OopMap *om) { _oop_map = om; }
 
  private:
-  void verify_input(JVMState* jvms, uint idx) const {
+  // JDK-8358751: const JVMState* so compute_receiver_info (const) can use argument().
+  void verify_input(const JVMState* jvms, uint idx) const {
     assert(verify_jvms(jvms), "jvms must match");
     Node* n = in(idx);
     assert((!n->bottom_type()->isa_long() && !n->bottom_type()->isa_double()) ||
@@ -358,35 +367,45 @@ public:
   }
 
  public:
-  // Functionality from old debug nodes which has changed
-  Node *local(JVMState* jvms, uint idx) const {
-    verify_input(jvms, jvms->locoff() + idx);
-    return in(jvms->locoff() + idx);
+  // JDK-8358751: slot-kind asserts (upstream) — avoid wrong edge indexing on safepoints.
+  Node* local(const JVMState* jvms, uint idx) const {
+    uint loc_idx = jvms->locoff() + idx;
+    assert(jvms->is_loc(loc_idx), "not a local slot");
+    verify_input(jvms, loc_idx);
+    return in(loc_idx);
   }
-  Node *stack(JVMState* jvms, uint idx) const {
-    verify_input(jvms, jvms->stkoff() + idx);
-    return in(jvms->stkoff() + idx);
+  Node* stack(const JVMState* jvms, uint idx) const {
+    uint stk_idx = jvms->stkoff() + idx;
+    assert(jvms->is_stk(stk_idx), "not a stack slot");
+    verify_input(jvms, stk_idx);
+    return in(stk_idx);
   }
-  Node *argument(JVMState* jvms, uint idx) const {
-    verify_input(jvms, jvms->argoff() + idx);
-    return in(jvms->argoff() + idx);
+  Node* argument(const JVMState* jvms, uint idx) const {
+    uint arg_idx = jvms->argoff() + idx;
+    assert(jvms->is_stk(arg_idx), "not an argument slot");
+    verify_input(jvms, arg_idx);
+    return in(arg_idx);
   }
-  Node *monitor_box(JVMState* jvms, uint idx) const {
+  Node* monitor_box(const JVMState* jvms, uint idx) const {
     assert(verify_jvms(jvms), "jvms must match");
-    return in(jvms->monitor_box_offset(idx));
+    uint mon_box_idx = jvms->monitor_box_offset(idx);
+    assert(jvms->is_monitor_box(mon_box_idx), "not a monitor box offset");
+    return in(mon_box_idx);
   }
-  Node *monitor_obj(JVMState* jvms, uint idx) const {
+  Node* monitor_obj(const JVMState* jvms, uint idx) const {
     assert(verify_jvms(jvms), "jvms must match");
-    return in(jvms->monitor_obj_offset(idx));
+    uint mon_obj_idx = jvms->monitor_obj_offset(idx);
+    assert(jvms->is_mon(mon_obj_idx) && !jvms->is_monitor_box(mon_obj_idx), "not a monitor obj offset");
+    return in(mon_obj_idx);
   }
 
-  void  set_local(JVMState* jvms, uint idx, Node *c);
+  void  set_local(const JVMState* jvms, uint idx, Node *c);
 
-  void  set_stack(JVMState* jvms, uint idx, Node *c) {
+  void  set_stack(const JVMState* jvms, uint idx, Node *c) {
     assert(verify_jvms(jvms), "jvms must match");
     set_req(jvms->stkoff() + idx, c);
   }
-  void  set_argument(JVMState* jvms, uint idx, Node *c) {
+  void  set_argument(const JVMState* jvms, uint idx, Node *c) {
     assert(verify_jvms(jvms), "jvms must match");
     set_req(jvms->argoff() + idx, c);
   }
